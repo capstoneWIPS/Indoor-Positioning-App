@@ -258,7 +258,7 @@ class MapActivity : AppCompatActivity() {
             workingBitmap = newWorking
 
             // Load existing markers from JSON
-            loadExistingMarkers()
+            //loadExistingMarkers()
 
         } catch (e: Exception) {
             Log.e("MapActivity", "Error initializing bitmaps: ${e.message}", e)
@@ -394,15 +394,9 @@ class MapActivity : AppCompatActivity() {
                                 val zz3=colsjson.get(result2.BSSID)
                                 inputl[zz3 as Int]=(result2.level).toFloat()
                             }
-
                         }
-
                     //alternatively later on make sep list for ssids, so u can chec if its ther in ssids
-
-
                     }
-
-
                 }
             }
             val output = runPrediction( ortSession , ortEnvironment )[0]
@@ -416,11 +410,16 @@ class MapActivity : AppCompatActivity() {
             currentFloor=decodeFloor2[temp]!!
             val currentScale2 = mapImageView.scale
             val currentCenter2 = mapImageView.center
+            //initializeBitmaps()
+            for (i in 0 until floorChipGroup.childCount) {
+                val chip = floorChipGroup.getChildAt(i) as Chip
+                chip.isChecked = (chip.text.toString() == currentFloor) // Check the chip that matches the new floor, uncheck others
+            }
+            loadFloorPlan(currentFloor)
             addMarkerAndSave(currentScale2,currentCenter2)
-            //        loadFloorPlan(currentFloor)
 
-
-            Toast.makeText(this, "Outputt: $a, $b ", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Outputt: $currentFloor $c $a, $b ", Toast.LENGTH_SHORT).show()
+            Log.d("MapActivity", "Single tap detected at screen coordinates: (${a}, ${b}) at floor ${currentFloor} flor no ${c}")
             initparamss()
         }
     }
