@@ -80,6 +80,7 @@ class MapActivity : AppCompatActivity() {
             if (isScanning) {
                 startWifiScan()
                 handler.postDelayed(this, scanInterval)
+                getpositionn()
             }
         }
     }
@@ -380,48 +381,52 @@ class MapActivity : AppCompatActivity() {
         }
 
         saveButtonVar.setOnClickListener {
-            //deleteLastPoint()
-            val ortEnvironment = OrtEnvironment.getEnvironment()
-            val ortSession = createORTSession( ortEnvironment )
-            for (result2 in latestScanResults) {
-                if (result2.SSID.isNotEmpty()) {
-                    val zz1=result2.SSID
-                    if (zz1=="PESU-CIE" ||  zz1=="PESU-Commandcenter" || zz1=="PESU-EC-Campus" || zz1=="PESU-PIXELB" || zz1=="PESU-Research1" || zz1=="PESU-Research2" ) {
-                        val zz2=colsjson.get(zz1)
-                        inputl[zz2 as Int]=(1).toFloat()
-                        if (result2.BSSID.isNotEmpty()){ //get index in inputl by takin bssid as key from colsjson,put rssi in this index
-                            if (colsjson.has(result2.BSSID)){
-                                val zz3=colsjson.get(result2.BSSID)
-                                inputl[zz3 as Int]=(result2.level).toFloat()
-                            }
+            getpositionn()
+        }
+    }
+
+    fun getpositionn(){
+        //deleteLastPoint()
+        val ortEnvironment = OrtEnvironment.getEnvironment()
+        val ortSession = createORTSession( ortEnvironment )
+        for (result2 in latestScanResults) {
+            if (result2.SSID.isNotEmpty()) {
+                val zz1=result2.SSID
+                if (zz1=="PESU-CIE" ||  zz1=="PESU-Commandcenter" || zz1=="PESU-EC-Campus" || zz1=="PESU-PIXELB" || zz1=="PESU-Research1" || zz1=="PESU-Research2" ) {
+                    val zz2=colsjson.get(zz1)
+                    inputl[zz2 as Int]=(1).toFloat()
+                    if (result2.BSSID.isNotEmpty()){ //get index in inputl by takin bssid as key from colsjson,put rssi in this index
+                        if (colsjson.has(result2.BSSID)){
+                            val zz3=colsjson.get(result2.BSSID)
+                            inputl[zz3 as Int]=(result2.level).toFloat()
                         }
-                    //alternatively later on make sep list for ssids, so u can chec if its ther in ssids
                     }
+                    //alternatively later on make sep list for ssids, so u can chec if its ther in ssids
                 }
             }
-            val output = runPrediction( ortSession , ortEnvironment )[0]
-            val a = output[0]
-            val b = output[1]
-            val c = output[2]
-            print(output.contentToString())
-            normalizedX= a.toDouble()
-            normalizedY=b.toDouble()
-            temp=round(c).toInt()
-            currentFloor=decodeFloor2[temp]!!
-            val currentScale2 = mapImageView.scale
-            val currentCenter2 = mapImageView.center
-            //initializeBitmaps()
-            for (i in 0 until floorChipGroup.childCount) {
-                val chip = floorChipGroup.getChildAt(i) as Chip
-                chip.isChecked = (chip.text.toString() == currentFloor) // Check the chip that matches the new floor, uncheck others
-            }
-            loadFloorPlan(currentFloor)
-            addMarkerAndSave(currentScale2,currentCenter2)
-
-            Toast.makeText(this, "Outputt: $currentFloor $c $a, $b ", Toast.LENGTH_SHORT).show()
-            Log.d("MapActivity", "Single tap detected at screen coordinates: (${a}, ${b}) at floor ${currentFloor} flor no ${c}")
-            initparamss()
         }
+        val output = runPrediction( ortSession , ortEnvironment )[0]
+        val a = output[0]
+        val b = output[1]
+        val c = output[2]
+        print(output.contentToString())
+        normalizedX= a.toDouble()
+        normalizedY=b.toDouble()
+        temp=round(c).toInt()
+        currentFloor=decodeFloor2[temp]!!
+        val currentScale2 = mapImageView.scale
+        val currentCenter2 = mapImageView.center
+        //initializeBitmaps()
+        for (i in 0 until floorChipGroup.childCount) {
+            val chip = floorChipGroup.getChildAt(i) as Chip
+            chip.isChecked = (chip.text.toString() == currentFloor) // Check the chip that matches the new floor, uncheck others
+        }
+        loadFloorPlan(currentFloor)
+        addMarkerAndSave(currentScale2,currentCenter2)
+
+        Toast.makeText(this, "Outputt: $currentFloor $c $a, $b ", Toast.LENGTH_SHORT).show()
+        Log.d("MapActivity", "Single tap detected at screen coordinates: (${a}, ${b}) at floor ${currentFloor} flor no ${c}")
+        initparamss()
     }
 
     private fun initializeViews() {
