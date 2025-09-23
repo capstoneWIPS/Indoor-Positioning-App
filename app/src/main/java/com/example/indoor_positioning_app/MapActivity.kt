@@ -4,13 +4,13 @@ import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import android.Manifest
+import android.animation.ValueAnimator
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
+import android.graphics.*
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -20,13 +20,19 @@ import android.os.Looper
 import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.view.View
+import android.view.ViewGroup
+import android.view.animation.LinearInterpolator
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.view.GravityCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -37,22 +43,116 @@ import java.text.SimpleDateFormat
 import java.util.*
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.davemorrissey.labs.subscaleview.ImageSource
-import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Paint
-import android.graphics.PointF
+import com.google.android.material.navigation.NavigationView
 import org.json.JSONArray
 import java.nio.FloatBuffer
 import kotlin.math.*
+import com.google.android.material.appbar.MaterialToolbar
+import androidx.appcompat.app.ActionBarDrawerToggle
 
+// Custom overlay view for position marker
+class PositionOverlayView(context: Context) : View(context) {
+    private var normalizedX = 0.0
+    private var normalizedY = 0.0
+    private var mapImageView: SubsamplingScaleImageView? = null
+    private var currentPulseScale = 1.0f
+    private var originalImageWidth = 0
+    private var originalImageHeight = 0
+
+    private val positionDotPaint = Paint().apply {
+        color = Color.parseColor("#007AFF")
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val positionRingPaint = Paint().apply {
+        color = Color.parseColor("#80007AFF")
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+
+    private val positionBorderPaint = Paint().apply {
+        color = Color.WHITE
+        style = Paint.Style.STROKE
+        strokeWidth = 4f
+        isAntiAlias = true
+    }
+
+    fun setMapImageView(imageView: SubsamplingScaleImageView) {
+        mapImageView = imageView
+        Log.d("PositionOverlay", "Map image view set")
+    }
+
+    fun updatePosition(x: Double, y: Double, imgWidth: Int, imgHeight: Int) {
+        Log.d("PositionOverlay", "updatePosition called: x=$x, y=$y, imgWidth=$imgWidth, imgHeight=$imgHeight")
+        normalizedX = x
+        normalizedY = y
+        originalImageWidth = imgWidth
+        originalImageHeight = imgHeight
+        invalidate()
+    }
+
+    fun updatePulseScale(scale: Float) {
+        currentPulseScale = scale
+        invalidate()
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+
+        Log.d("PositionOverlay", "onDraw called - normalizedX: $normalizedX, normalizedY: $normalizedY")
+
+        val imageView = mapImageView
+        Log.d("PositionOverlay", "ImageView isReady: ${imageView?.isReady}, normalizedX > 0: ${normalizedX > 0.0}, normalizedY > 0: ${normalizedY > 0.0}")
+
+        if (imageView?.isReady == true && normalizedX > 0.0 && normalizedY > 0.0) {
+            // Convert normalized coordinates to source coordinates
+            val sourceX = (normalizedX * originalImageWidth).toFloat()
+            val sourceY = (normalizedY * originalImageHeight).toFloat()
+
+            Log.d("PositionOverlay", "Source coordinates: sourceX=$sourceX, sourceY=$sourceY")
+
+            // Convert source coordinates to view coordinates
+            val viewCoord = imageView.sourceToViewCoord(sourceX, sourceY)
+            Log.d("PositionOverlay", "View coordinates: ${viewCoord?.x}, ${viewCoord?.y}")
+
+            if (viewCoord != null && viewCoord.x >= 0 && viewCoord.y >= 0 &&
+                viewCoord.x <= width && viewCoord.y <= height) {
+
+                val baseRadius = 20f
+                val pulseRadius = baseRadius * currentPulseScale
+
+                Log.d("PositionOverlay", "Drawing marker at: ${viewCoord.x}, ${viewCoord.y}, radius: $baseRadius")
+
+                // Draw pulsating outer ring
+                val ringPaint = Paint(positionRingPaint).apply {
+                    alpha = ((1.0f - (currentPulseScale - 1.0f)) * 80).toInt().coerceIn(20, 80)
+                }
+                canvas.drawCircle(viewCoord.x, viewCoord.y, pulseRadius, ringPaint)
+
+                // Draw main position dot with white border
+                canvas.drawCircle(viewCoord.x, viewCoord.y, baseRadius + 4f, positionBorderPaint)
+                canvas.drawCircle(viewCoord.x, viewCoord.y, baseRadius, positionDotPaint)
+            } else {
+                Log.d("PositionOverlay", "ViewCoord is null or outside bounds")
+            }
+        } else {
+            Log.d("PositionOverlay", "Conditions not met for drawing marker")
+        }
+    }
+}
 class MapActivity : AppCompatActivity() {
-
+    private lateinit var drawerLayout: DrawerLayout
+    private lateinit var navigationView: NavigationView
     private lateinit var mapImageView: SubsamplingScaleImageView
     private lateinit var floorChipGroup: ChipGroup
     private lateinit var fabSensors: FloatingActionButton
-    private lateinit var saveButtonVar: Button
+    private lateinit var saveButton: Button
     private lateinit var wifiManager: WifiManager
     private lateinit var gestureDetector: GestureDetector
+
+    // Add the overlay view
+    private lateinit var positionOverlay: PositionOverlayView
 
     // Use normalized coordinates (0.0 to 1.0) instead of absolute pixel coordinates
     private var normalizedX = 0.0
@@ -65,8 +165,8 @@ class MapActivity : AppCompatActivity() {
     private var latestScanResults: List<android.net.wifi.ScanResult> = emptyList()
 
     // Data structure to store all scan data
-    private val outermostmap = mutableMapOf<Int, MutableMap<String, Any?>>()
-    private val outermostmap2 = mutableMapOf<String, Any?>()
+    private val outermostMap = mutableMapOf<Int, MutableMap<String, Any?>>()
+    private val currentScanData = mutableMapOf<String, Any?>()
 
     private var readMap = mutableMapOf<String,MutableMap<Int, MutableMap<String, Any?>>>()
     var scanIndexMap = mutableMapOf<String, Int>()
@@ -75,12 +175,16 @@ class MapActivity : AppCompatActivity() {
     private var originalImageWidth = 0
     private var originalImageHeight = 0
 
+    // Animation properties for pulsating dot
+    private var pulseAnimator: ValueAnimator? = null
+    private var currentPulseScale = 1.0f
+
     private val scanRunnable = object : Runnable {
         override fun run() {
             if (isScanning) {
                 startWifiScan()
                 handler.postDelayed(this, scanInterval)
-                getpositionn()
+                getCurrentPosition()
             }
         }
     }
@@ -132,17 +236,17 @@ class MapActivity : AppCompatActivity() {
         "Ground Floor" to 6
     )
 
-    private val decodeFloor2: MutableMap<Int,String> = mutableMapOf(
-        0 to "Floor Five" ,
-        1 to "Floor Four" ,
-        2 to "Floor One" ,
-        3 to "Floor Six" ,
-        4 to "Floor Three" ,
-        5 to "Floor Two" ,
+    private val decodeFloor: MutableMap<Int,String> = mutableMapOf(
+        0 to "Floor Five",
+        1 to "Floor Four",
+        2 to "Floor One",
+        3 to "Floor Six",
+        4 to "Floor Three",
+        5 to "Floor Two",
         6 to "Ground Floor"
     )
 
-    private val decodeFloorplan: MutableMap<Int, Int> = mutableMapOf(
+    private val decodeFloorPlan: MutableMap<Int, Int> = mutableMapOf(
         0 to R.drawable.fifth_floor_new,
         1 to R.drawable.fourth_floor,
         2 to R.drawable.first_floor,
@@ -152,87 +256,59 @@ class MapActivity : AppCompatActivity() {
         6 to R.drawable.ground_floor
     )
 
+    var jsonColumnText = ""
 
+    private lateinit var columnsJson: JSONObject // reads JSON containing BSSID:column number pairs
+    var columnLength = 0
+    private lateinit var modelInput: FloatArray
 
-    var text11 = ""
-
-    private lateinit  var colsjson: JSONObject //reads JSON containing BSSID:colno pairs
-    //private var inputl = mutableListOf<Float>() // input list to pass to ONNX model
-
-    var colLen1 = 0
-    private lateinit var inputl: FloatArray
-
-    //private var inputl = FloatArray(colLen1)
-    private var temp = 0
-
-
-
+    private var floorPrediction = 0
 
     private var currentFloor = "Ground Floor"
     private lateinit var originalBitmap: Bitmap
-    private lateinit var workingBitmap: Bitmap
+    private var isFloorChanged = false
 
-
-
-    val paint = Paint().apply {
-        color = Color.RED
-        style = Paint.Style.FILL
-        isAntiAlias = true
-    }
-
-    // initalise list with defaault values,finaly this list is going to ONNX
-    private fun initparamss(){
-        var xx1 = 0
+    // Initialize list with default values, finally this list goes to ONNX model
+    private fun initializeModelParameters() {
+        var index = 0
         for (i in 0..5) {
-            inputl[xx1++]=(0.0).toFloat()
+            modelInput[index++] = 0.0f
         }
-        for (i in (6..(colLen1-1))){
-            inputl[xx1++]=(-120.0).toFloat()
+        for (i in 6 until columnLength) {
+            modelInput[index++] = -120.0f
         }
-        print(inputl.contentToString())
-        //finalInputL.add(inputl)
-
+        Log.d("MapActivity", "Model input initialized: ${modelInput.contentToString()}")
     }
 
     // Create an OrtSession with the given OrtEnvironment
-    private fun createORTSession( ortEnvironment: OrtEnvironment) : OrtSession {
-        val modelBytes = resources.openRawResource( R.raw.rssiknn ).readBytes()
-        return ortEnvironment.createSession( modelBytes )
+    private fun createONNXSession(ortEnvironment: OrtEnvironment): OrtSession {
+        val modelBytes = resources.openRawResource(R.raw.rssiknn).readBytes()
+        return ortEnvironment.createSession(modelBytes)
     }
 
-    private fun runPrediction( ortSession: OrtSession , ortEnvironment: OrtEnvironment ) : Array<FloatArray> {
+    private fun runPositionPrediction(ortSession: OrtSession, ortEnvironment: OrtEnvironment): Array<FloatArray> {
         // Get the name of the input node
         val inputName = ortSession.inputNames?.iterator()?.next()
         // Make a FloatBuffer of the inputs
-        val floatBufferInputs = FloatBuffer.wrap( inputl )
-        // Create input tensor with floatBufferInputs of shape ( 1 , 1 )
-        val inputTensor = OnnxTensor.createTensor( ortEnvironment , floatBufferInputs , longArrayOf( 1, colLen1.toLong() ) )
+        val floatBufferInputs = FloatBuffer.wrap(modelInput)
+        // Create input tensor with floatBufferInputs of shape (1, columnLength)
+        val inputTensor = OnnxTensor.createTensor(
+            ortEnvironment,
+            floatBufferInputs,
+            longArrayOf(1, columnLength.toLong())
+        )
         // Run the model
-        val results = ortSession.run( mapOf( inputName to inputTensor ) )
+        val results = ortSession.run(mapOf(inputName to inputTensor))
         // Fetch and return the results
         val output = results[0].value as Array<FloatArray>
-        println(output[0].contentToString())
+        Log.d("MapActivity", "Model prediction output: ${output[0].contentToString()}")
         return output
-    }
-
-
-
-
-
-    // Scale marker radius relative to image size for consistency
-    private fun getMarkerRadius(): Float {
-        return if (originalImageWidth > 0) {
-            (originalImageWidth * 0.005f).coerceAtLeast(10f)
-        } else {
-            20f // Default fallback
-        }
     }
 
     private fun initializeBitmaps() {
         try {
-            Log.d("MapActivity", "Initializing bitmaps for floor: $currentFloor")
+            Log.d("MapActivity", "Initializing bitmap for floor: $currentFloor")
 
-            // Load original bitmap and get its dimensions
             val resBitmap = BitmapFactory.decodeResource(
                 resources,
                 floorPlans[currentFloor] ?: R.drawable.ground_floor
@@ -241,83 +317,37 @@ class MapActivity : AppCompatActivity() {
             originalImageWidth = resBitmap.width
             originalImageHeight = resBitmap.height
 
-            Log.d("MapActivity", "Image dimensions: ${originalImageWidth}x${originalImageHeight}")
-
-            // Create new copies without recycling existing ones yet
-            val newOriginal = resBitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val newWorking = newOriginal.copy(Bitmap.Config.ARGB_8888, true)
-
-            // Only recycle old bitmaps after we've created new ones
+            // Only recycle old bitmap if it exists
             if (::originalBitmap.isInitialized && !originalBitmap.isRecycled) {
                 originalBitmap.recycle()
             }
-            if (::workingBitmap.isInitialized && !workingBitmap.isRecycled) {
-                workingBitmap.recycle()
-            }
 
-            originalBitmap = newOriginal
-            workingBitmap = newWorking
-
-            // Load existing markers from JSON
-            //loadExistingMarkers()
+            originalBitmap = resBitmap
 
         } catch (e: Exception) {
-            Log.e("MapActivity", "Error initializing bitmaps: ${e.message}", e)
-            Toast.makeText(this, "Error initializing bitmaps", Toast.LENGTH_SHORT).show()
+            Log.e("MapActivity", "Error initializing bitmap: ${e.message}", e)
+            Toast.makeText(this, "Error initializing bitmap", Toast.LENGTH_SHORT).show()
         }
     }
 
-    private fun loadExistingMarkers() {
-        try {
-            if (originalImageWidth <= 0 || originalImageHeight <= 0) {
-                Log.w("MapActivity", "Cannot load markers: invalid image dimensions")
-                return
+    private fun startPulseAnimation() {
+        pulseAnimator?.cancel()
+        pulseAnimator = ValueAnimator.ofFloat(1.0f, 2.0f).apply {
+            duration = 1500
+            repeatCount = ValueAnimator.INFINITE
+            repeatMode = ValueAnimator.REVERSE
+            interpolator = LinearInterpolator()
+            addUpdateListener { animation ->
+                currentPulseScale = animation.animatedValue as Float
+                positionOverlay.updatePulseScale(currentPulseScale)
             }
-
-            // Start with a fresh copy of the original image
-            workingBitmap = originalBitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(workingBitmap)
-
-            val jsonFile = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "${currentFloor.replace(" ", "_")}.json")
-
-            if (jsonFile.exists()) {
-                val existingJson = JSONObject(jsonFile.readText())
-
-                if (existingJson.has("all_scans")) {
-                    val allScansArray = existingJson.getJSONArray("all_scans")
-
-                    for (i in 0 until allScansArray.length()) {
-                        val scanObject = allScansArray.getJSONObject(i)
-
-                        if (scanObject.has("position")) {
-                            val position = scanObject.getJSONObject("position")
-
-                            // Check if we have normalized coordinates (new format)
-                            if (position.has("normalized_x") && position.has("normalized_y")) {
-                                val normalizedX = position.getDouble("normalized_x")
-                                val normalizedY = position.getDouble("normalized_y")
-
-                                val pixelX = (normalizedX * originalImageWidth).toFloat()
-                                val pixelY = (normalizedY * originalImageHeight).toFloat()
-
-                                canvas.drawCircle(pixelX, pixelY, getMarkerRadius(), paint)
-                                Log.d("MapActivity", "Loaded marker at normalized: ($normalizedX, $normalizedY) pixel: ($pixelX, $pixelY)")
-                            }
-                            // Fallback to old format (absolute coordinates)
-                            else if (position.has("x") && position.has("y")) {
-                                val pixelX = position.getInt("x").toFloat()
-                                val pixelY = position.getInt("y").toFloat()
-
-                                canvas.drawCircle(pixelX, pixelY, getMarkerRadius(), paint)
-                                Log.d("MapActivity", "Loaded marker at pixel: ($pixelX, $pixelY) (old format)")
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e("MapActivity", "Error loading existing markers: ${e.message}", e)
+            start()
         }
+    }
+
+    private fun stopPulseAnimation() {
+        pulseAnimator?.cancel()
+        currentPulseScale = 1.0f
     }
 
     override fun onResume() {
@@ -328,6 +358,7 @@ class MapActivity : AppCompatActivity() {
         if (checkIfPermissionsGranted()) {
             startContinuousScanning()
         }
+        startPulseAnimation()
     }
 
     override fun onPause() {
@@ -339,6 +370,7 @@ class MapActivity : AppCompatActivity() {
         }
 
         stopContinuousScanning()
+        stopPulseAnimation()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -352,9 +384,10 @@ class MapActivity : AppCompatActivity() {
         }
 
         initializeViews()
+        setupDrawer()
         initializeWifi()
         setupFloorSelector()
-        setupFab()
+        setupFloatingActionButton()
         checkPermissions()
 
         // Initialize bitmaps BEFORE setting up map interaction
@@ -362,77 +395,144 @@ class MapActivity : AppCompatActivity() {
         setupMapInteraction()
         loadFloorPlan(currentFloor)
 
-        text11 = resources.openRawResource(R.raw.colsp2)
+        jsonColumnText = resources.openRawResource(R.raw.colsp2)
             .bufferedReader().use { it.readText() }
-        Log.d("CompatActivity", "JSONnn text: $text11")
+        Log.d("MapActivity", "JSON column text loaded successfully")
 
-        colsjson=JSONObject(text11)
-        colLen1 = colsjson.length()
+        columnsJson = JSONObject(jsonColumnText)
+        columnLength = columnsJson.length()
 
-        inputl = FloatArray(colLen1)
+        modelInput = FloatArray(columnLength)
 
-        initparamss()
+        initializeModelParameters()
 
-
-        saveButtonVar = findViewById(R.id.button3)
+        saveButton = findViewById(R.id.button3)
 
         if (checkAndRequestPermissions()) {
             startContinuousScanning()
         }
 
-        saveButtonVar.setOnClickListener {
-            getpositionn()
+        saveButton.setOnClickListener {
+            getCurrentPosition()
         }
     }
 
-    fun getpositionn(){
-        //deleteLastPoint()
+    fun getCurrentPosition() {
+
+
+        // Then continue with your existing ONNX prediction code...
         val ortEnvironment = OrtEnvironment.getEnvironment()
-        val ortSession = createORTSession( ortEnvironment )
-        for (result2 in latestScanResults) {
-            if (result2.SSID.isNotEmpty()) {
-                val zz1=result2.SSID
-                if (zz1=="PESU-CIE" ||  zz1=="PESU-Commandcenter" || zz1=="PESU-EC-Campus" || zz1=="PESU-PIXELB" || zz1=="PESU-Research1" || zz1=="PESU-Research2" ) {
-                    val zz2=colsjson.get(zz1)
-                    inputl[zz2 as Int]=(1).toFloat()
-                    if (result2.BSSID.isNotEmpty()){ //get index in inputl by takin bssid as key from colsjson,put rssi in this index
-                        if (colsjson.has(result2.BSSID)){
-                            val zz3=colsjson.get(result2.BSSID)
-                            inputl[zz3 as Int]=(result2.level).toFloat()
+        val ortSession = createONNXSession(ortEnvironment)
+
+        for (result in latestScanResults) {
+            if (result.SSID.isNotEmpty()) {
+                val ssid = result.SSID
+                if (ssid in listOf("PESU-CIE", "PESU-Commandcenter", "PESU-EC-Campus",
+                        "PESU-PIXELB", "PESU-Research1", "PESU-Research2")) {
+                    val columnIndex = columnsJson.get(ssid)
+                    modelInput[columnIndex as Int] = 1f
+
+                    if (result.BSSID.isNotEmpty()) {
+                        if (columnsJson.has(result.BSSID)) {
+                            val bssidColumnIndex = columnsJson.get(result.BSSID)
+                            modelInput[bssidColumnIndex as Int] = result.level.toFloat()
                         }
                     }
-                    //alternatively later on make sep list for ssids, so u can chec if its ther in ssids
                 }
             }
         }
-        val output = runPrediction( ortSession , ortEnvironment )[0]
-        val a = output[0]
-        val b = output[1]
-        val c = output[2]
-        print(output.contentToString())
-        normalizedX= a.toDouble()
-        normalizedY=b.toDouble()
-        temp=round(c).toInt()
-        currentFloor=decodeFloor2[temp]!!
-        val currentScale2 = mapImageView.scale
-        val currentCenter2 = mapImageView.center
-        //initializeBitmaps()
-        for (i in 0 until floorChipGroup.childCount) {
-            val chip = floorChipGroup.getChildAt(i) as Chip
-            chip.isChecked = (chip.text.toString() == currentFloor) // Check the chip that matches the new floor, uncheck others
+
+        val output = runPositionPrediction(ortSession, ortEnvironment)[0]
+        val x = output[0]
+        val y = output[1]
+        val floorNumber = output[2]
+
+        Log.d("MapActivity", "Position prediction: x=$x, y=$y, floor=$floorNumber")
+
+        // Use predicted coordinates
+        normalizedX = x.toDouble()
+        normalizedY = y.toDouble()
+        floorPrediction = round(floorNumber).toInt()
+        val newFloor = decodeFloor[floorPrediction]!!
+
+        // Check if floor changed
+        if (newFloor != currentFloor) {
+            currentFloor = newFloor
+            isFloorChanged = true
+
+            // Update floor selection chips
+            for (i in 0 until floorChipGroup.childCount) {
+                val chip = floorChipGroup.getChildAt(i) as Chip
+                chip.isChecked = (chip.text.toString() == currentFloor)
+            }
+
+            loadFloorPlan(currentFloor)
         }
-        loadFloorPlan(currentFloor)
-        addMarkerAndSave(currentScale2,currentCenter2)
 
-        Toast.makeText(this, "Outputt: $currentFloor $c $a, $b ", Toast.LENGTH_SHORT).show()
-        Log.d("MapActivity", "Single tap detected at screen coordinates: (${a}, ${b}) at floor ${currentFloor} flor no ${c}")
-        initparamss()
+        // Update position marker
+        addPositionMarkerAndSave()
+
+        Log.d("MapActivity", "Position updated: floor=$currentFloor, coordinates=($normalizedX, $normalizedY)")
+        initializeModelParameters()
     }
-
     private fun initializeViews() {
+        // Initialize drawer components
+        drawerLayout = findViewById(R.id.drawerLayout)
+        navigationView = findViewById(R.id.navigationView)
+
+        // Your existing views
         mapImageView = findViewById(R.id.mapImageView)
         floorChipGroup = findViewById(R.id.floorChipGroup)
         fabSensors = findViewById(R.id.fabSensors)
+
+        // Create or reuse overlay
+        if (!::positionOverlay.isInitialized) {
+            positionOverlay = PositionOverlayView(this)
+        }
+
+        // Remove from parent if it has one
+        (positionOverlay.parent as? ViewGroup)?.removeView(positionOverlay)
+
+        positionOverlay.setMapImageView(mapImageView)
+        positionOverlay.setBackgroundColor(Color.TRANSPARENT)
+
+        // Add overlay to the MAIN CoordinatorLayout instead of the FrameLayout
+        val mainLayout = findViewById<androidx.coordinatorlayout.widget.CoordinatorLayout>(R.id.mapMain)
+        val layoutParams = androidx.coordinatorlayout.widget.CoordinatorLayout.LayoutParams(
+            androidx.coordinatorlayout.widget.CoordinatorLayout.LayoutParams.MATCH_PARENT,
+            androidx.coordinatorlayout.widget.CoordinatorLayout.LayoutParams.MATCH_PARENT
+        )
+        layoutParams.behavior = com.google.android.material.appbar.AppBarLayout.ScrollingViewBehavior()
+
+        mainLayout.addView(positionOverlay, layoutParams)
+
+        Log.d("MapActivity", "Overlay added to main layout")
+    }
+
+    override fun onBackPressed() {
+        if (drawerLayout.isDrawerOpen(GravityCompat.START)) {
+            drawerLayout.closeDrawer(GravityCompat.START)
+        } else {
+            super.onBackPressed()
+        }
+    }
+    private fun setupDrawer() {
+        val toolbar = findViewById<MaterialToolbar>(R.id.mapToolbar)
+        setSupportActionBar(toolbar)
+
+        val toggle = ActionBarDrawerToggle(
+            this, drawerLayout, toolbar,
+            R.string.navigation_drawer_open, R.string.navigation_drawer_close
+        )
+        drawerLayout.addDrawerListener(toggle)
+        toggle.syncState()
+
+        // Set up navigation view
+        navigationView.setNavigationItemSelectedListener { menuItem ->
+            // Handle navigation item clicks if you add menu items
+            drawerLayout.closeDrawer(GravityCompat.START)
+            true
+        }
     }
 
     private fun initializeWifi() {
@@ -457,10 +557,6 @@ class MapActivity : AppCompatActivity() {
                     if (point != null) {
                         Log.d("MapActivity", "Converted to image coordinates: (${point.x}, ${point.y})")
 
-                        // Store current zoom and pan state
-                        val currentScale = mapImageView.scale
-                        val currentCenter = mapImageView.center
-
                         // Convert to normalized coordinates (0.0 to 1.0)
                         normalizedX = (point.x.toDouble() / originalImageWidth).coerceIn(0.0, 1.0)
                         normalizedY = (point.y.toDouble() / originalImageHeight).coerceIn(0.0, 1.0)
@@ -469,12 +565,10 @@ class MapActivity : AppCompatActivity() {
 
                         Toast.makeText(
                             this@MapActivity,
-                            "Tapped at normalized: (${String.format("%.3f", normalizedX)}, ${String.format("%.3f", normalizedY)})",
+                            "Tapped at: (${String.format("%.3f", normalizedX)}, ${String.format("%.3f", normalizedY)})",
                             Toast.LENGTH_SHORT
                         ).show()
 
-                        // Add marker and save data
-                        //addMarkerAndSave(currentScale, currentCenter)
                     } else {
                         Log.w("MapActivity", "Failed to convert screen coordinates to image coordinates")
                         Toast.makeText(this@MapActivity, "Unable to detect tap position", Toast.LENGTH_SHORT).show()
@@ -495,104 +589,33 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
-    private fun markpoint(x:Float,y:Float) {
+    // Ultra-simple position update - just tells overlay to redraw
+    private fun updatePositionOnly() {
+        positionOverlay.updatePosition(
+            normalizedX,
+            normalizedY,
+            originalImageWidth,
+            originalImageHeight
+        )
+    }
+
+    private fun addPositionMarkerAndSave() {
         try {
-            Log.d("MapActivity", "Adding marker at normalized coordinates: ($normalizedX, $normalizedY)")
+            Log.d("MapActivity", "Adding position marker at normalized coordinates: ($normalizedX, $normalizedY)")
 
-            // Check if bitmaps are valid
-            if (!::workingBitmap.isInitialized || workingBitmap.isRecycled) {
-                Log.e("MapActivity", "Working bitmap not valid - reinitializing")
-                initializeBitmaps()
-                if (!::workingBitmap.isInitialized || workingBitmap.isRecycled) {
-                    throw IllegalStateException("Could not initialize valid working bitmap")
-                }
+            if (isFloorChanged) {
+                // Floor changed - load new floor plan but DON'T change the image until ready
+                isFloorChanged = false
             }
 
-            // Create a new copy of the working bitmap to draw on
-            val newWorkingBitmap = workingBitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(newWorkingBitmap)
-
-            val pixelX = (x * originalImageWidth).toFloat()
-            val pixelY = (y * originalImageHeight).toFloat()
-
-            Log.d("MapActivity", "Drawing marker at pixel coordinates: ($pixelX, $pixelY)")
-            canvas.drawCircle(pixelX, pixelY, getMarkerRadius(), paint)
-
-            // Replace the working bitmap
-            if (!workingBitmap.isRecycled) {
-                workingBitmap.recycle()
-            }
-            workingBitmap = newWorkingBitmap
-
-            // Update the image view
-            mapImageView.setImage(ImageSource.bitmap(workingBitmap))
-
+            // Simply update the overlay - this never interferes with zoom/pan
+            updatePositionOnly()
 
         } catch (e: Exception) {
-            Log.e("MapActivity", "Error adding marker: ${e.message}", e)
-            Toast.makeText(this, "Error adding marker: ${e.message}", Toast.LENGTH_SHORT).show()
+            Log.e("MapActivity", "Error adding position marker: ${e.message}", e)
+            Toast.makeText(this, "Error adding position marker: ${e.message}", Toast.LENGTH_SHORT).show()
         }
     }
-
-    private fun getcurposition1(){
-        processScanResults()
-
-    }
-
-    private fun addMarkerAndSave(preserveScale: Float, preserveCenter: PointF?) {
-        try {
-            Log.d("MapActivity", "Adding marker at normalized coordinates: ($normalizedX, $normalizedY)")
-
-            // Check if bitmaps are valid
-            if (!::workingBitmap.isInitialized || workingBitmap.isRecycled) {
-                Log.e("MapActivity", "Working bitmap not valid - reinitializing")
-                initializeBitmaps()
-                if (!::workingBitmap.isInitialized || workingBitmap.isRecycled) {
-                    throw IllegalStateException("Could not initialize valid working bitmap")
-                }
-            }
-
-            // Create a new copy of the working bitmap to draw on
-            val newWorkingBitmap = workingBitmap.copy(Bitmap.Config.ARGB_8888, true)
-            val canvas = Canvas(newWorkingBitmap)
-
-            val pixelX = (normalizedX * originalImageWidth).toFloat()
-            val pixelY = (normalizedY * originalImageHeight).toFloat()
-
-            Log.d("MapActivity", "Drawing marker at pixel coordinates: ($pixelX, $pixelY)")
-            canvas.drawCircle(pixelX, pixelY, getMarkerRadius(), paint)
-
-            // Replace the working bitmap
-            if (!workingBitmap.isRecycled) {
-                workingBitmap.recycle()
-            }
-            workingBitmap = newWorkingBitmap
-
-            // Process and save the scan data first
-            //processScanResults()
-            //saveRoomDataJson()
-
-            // Update the image view
-            mapImageView.setImage(ImageSource.bitmap(workingBitmap))
-
-            // Restore zoom/pan after a short delay
-            handler.postDelayed({
-                try {
-                    if (preserveCenter != null && mapImageView.isReady) {
-                        mapImageView.setScaleAndCenter(preserveScale, preserveCenter)
-                    }
-                } catch (e: Exception) {
-                    Log.e("MapActivity", "Error restoring zoom state: ${e.message}")
-                }
-            }, 100)
-
-        } catch (e: Exception) {
-            Log.e("MapActivity", "Error adding marker: ${e.message}", e)
-            Toast.makeText(this, "Error adding marker: ${e.message}", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    
 
     private fun checkPermissions() {
         val missingPermissions = REQUIRED_PERMISSIONS.filter {
@@ -663,12 +686,14 @@ class MapActivity : AppCompatActivity() {
         if (!isScanning) {
             isScanning = true
             handler.post(scanRunnable)
+            Log.d("MapActivity", "Started continuous WiFi scanning")
         }
     }
 
     private fun stopContinuousScanning() {
         isScanning = false
         handler.removeCallbacks(scanRunnable)
+        Log.d("MapActivity", "Stopped continuous WiFi scanning")
     }
 
     private fun startWifiScan() {
@@ -696,13 +721,15 @@ class MapActivity : AppCompatActivity() {
         try {
             val results = wifiManager.scanResults
             latestScanResults = results
+            Log.d("MapActivity", "WiFi scan successful: ${results.size} networks found")
         } catch (e: SecurityException) {
             Toast.makeText(this, "Security exception during scan: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
     private fun scanFailure() {
-        Toast.makeText(this, "WiFi scan failed. Will try again.", Toast.LENGTH_SHORT).show()
+        Log.w("MapActivity", "WiFi scan failed - will retry")
+        Toast.makeText(this, "WiFi scan failed. Retrying...", Toast.LENGTH_SHORT).show()
     }
 
     private fun setupFloorSelector() {
@@ -733,7 +760,7 @@ class MapActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupFab() {
+    private fun setupFloatingActionButton() {
         fabSensors.setOnClickListener {
             finish()
         }
@@ -745,22 +772,20 @@ class MapActivity : AppCompatActivity() {
             currentFloor = floorName
             initializeBitmaps()
 
-            if (::workingBitmap.isInitialized && !workingBitmap.isRecycled) {
-                mapImageView.setImage(ImageSource.bitmap(workingBitmap))
+            if (::originalBitmap.isInitialized && !originalBitmap.isRecycled) {
+                mapImageView.setImage(ImageSource.bitmap(originalBitmap))
 
-                // Configure the scale settings
                 mapImageView.setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE)
                 mapImageView.setMaxScale(10.0f)
                 mapImageView.setMinScale(0.1f)
                 mapImageView.setDoubleTapZoomScale(2.0f)
                 mapImageView.setDoubleTapZoomDpi(160)
 
-                // Enable gestures
                 mapImageView.setPanEnabled(true)
                 mapImageView.setZoomEnabled(true)
                 mapImageView.setQuickScaleEnabled(true)
             } else {
-                Log.e("MapActivity", "Working bitmap not available for floor plan")
+                Log.e("MapActivity", "Original bitmap not available for floor plan")
                 Toast.makeText(this, "Error loading floor plan bitmap", Toast.LENGTH_SHORT).show()
             }
 
@@ -772,42 +797,39 @@ class MapActivity : AppCompatActivity() {
 
     private fun processScanResults() {
         try {
-            val positionk = mutableMapOf<String, Any>()
-            val readingsk = mutableMapOf<String, MutableMap<String, Int>>()
+            val position = mutableMapOf<String, Any>()
+            val readings = mutableMapOf<String, MutableMap<String, Int>>()
 
-            // Store both normalized and pixel coordinates for backward compatibility stuffs :\
-            positionk["normalized_x"] = normalizedX
-            positionk["normalized_y"] = normalizedY
-            positionk["pixel_x"] = (normalizedX * originalImageWidth).toInt()
-            positionk["pixel_y"] = (normalizedY * originalImageHeight).toInt()
-            positionk["image_width"] = originalImageWidth
-            positionk["image_height"] = originalImageHeight
-
+            // Store both normalized and pixel coordinates for backward compatibility
+            position["normalized_x"] = normalizedX
+            position["normalized_y"] = normalizedY
+            position["pixel_x"] = (normalizedX * originalImageWidth).toInt()
+            position["pixel_y"] = (normalizedY * originalImageHeight).toInt()
+            position["image_width"] = originalImageWidth
+            position["image_height"] = originalImageHeight
 
             for (result in latestScanResults) {
                 if (result.SSID.isNotEmpty()) {
-                    if (result.SSID !in readingsk) {
-                        readingsk[result.SSID] = mutableMapOf()
+                    if (result.SSID !in readings) {
+                        readings[result.SSID] = mutableMapOf()
                     }
-                    readingsk[result.SSID]!![result.BSSID] = result.level
-
+                    readings[result.SSID]!![result.BSSID] = result.level
                 }
             }
 
+            currentScanData["position"] = position
+            currentScanData["readings"] = readings
+            currentScanData["floor"] = currentFloor
+            currentScanData["timestamp"] = System.currentTimeMillis()
 
-            outermostmap2["position"] = positionk
-            outermostmap2["readings"] = readingsk
-            outermostmap2["floor"] = currentFloor
-            outermostmap2["timestamp"] = System.currentTimeMillis()
-
-            printOutermostMap()
+            printScanData()
             scanIndex++
         } catch (e: Exception) {
             Log.e("MapActivity", "Error processing scan results: ${e.message}", e)
         }
     }
 
-    private fun saveRoomDataJson() {
+    private fun savePositionDataJson() {
         try {
             val fileName = "${currentFloor.replace(" ", "_")}.json"
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -827,8 +849,7 @@ class MapActivity : AppCompatActivity() {
 
             val scanJson = JSONObject()
 
-
-            val position = outermostmap2["position"] as? Map<String, Any>
+            val position = currentScanData["position"] as? Map<String, Any>
             if (position != null) {
                 val positionJson = JSONObject()
                 positionJson.put("normalized_x", position["normalized_x"])
@@ -840,8 +861,7 @@ class MapActivity : AppCompatActivity() {
                 scanJson.put("position", positionJson)
             }
 
-
-            val readings = outermostmap2["readings"] as? Map<String, Map<String, Int>>
+            val readings = currentScanData["readings"] as? Map<String, Map<String, Int>>
             if (readings != null) {
                 val readingsJson = JSONObject()
                 for ((ssid, bssidMap) in readings) {
@@ -854,9 +874,8 @@ class MapActivity : AppCompatActivity() {
                 scanJson.put("readings", readingsJson)
             }
 
-
             scanJson.put("index", allScansArray.length())
-            scanJson.put("floor", outermostmap2["floor"])
+            scanJson.put("floor", currentScanData["floor"])
             scanJson.put("scanned_at", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date()))
 
             allScansArray.put(scanJson)
@@ -869,11 +888,11 @@ class MapActivity : AppCompatActivity() {
                 writer.write(existingJson.toString(2))
             }
 
-            Toast.makeText(this, "Data saved to Downloads/$fileName (${allScansArray.length()} scan sessions)", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Position data saved to Downloads/$fileName (${allScansArray.length()} scan sessions)", Toast.LENGTH_LONG).show()
 
         } catch (e: Exception) {
-            Toast.makeText(this, "Error saving data: ${e.message}", Toast.LENGTH_LONG).show()
-            Log.e("MapActivity", "Error saving data: ${e.message}", e)
+            Toast.makeText(this, "Error saving position data: ${e.message}", Toast.LENGTH_LONG).show()
+            Log.e("MapActivity", "Error saving position data: ${e.message}", e)
             e.printStackTrace()
         }
     }
@@ -881,31 +900,28 @@ class MapActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopContinuousScanning()
-
+        stopPulseAnimation()
 
         try {
             if (::originalBitmap.isInitialized && !originalBitmap.isRecycled) {
                 originalBitmap.recycle()
             }
-            if (::workingBitmap.isInitialized && !workingBitmap.isRecycled) {
-                workingBitmap.recycle()
-            }
         } catch (e: Exception) {
-            Log.e("MapActivity", "Error cleaning up bitmaps", e)
+            Log.e("MapActivity", "Error cleaning up bitmap", e)
         }
 
         try {
             unregisterReceiver(wifiScanReceiver)
         } catch (e: IllegalArgumentException) {
-
+            // Receiver was not registered, ignore
         }
     }
 
-    private fun printOutermostMap() {
-        Log.d("MapActivity", "=== OUTERMOST MAP CONTENTS ===")
-        Log.d("MapActivity", "Total entries: ${outermostmap.size}")
+    private fun printScanData() {
+        Log.d("MapActivity", "=== SCAN DATA CONTENTS ===")
+        Log.d("MapActivity", "Total entries: ${outermostMap.size}")
 
-        for ((index, scanData) in outermostmap) {
+        for ((index, scanData) in outermostMap) {
             Log.d("MapActivity", "--- Scan Index: $index ---")
 
             val position = scanData["position"] as? Map<String, Any>
@@ -928,6 +944,6 @@ class MapActivity : AppCompatActivity() {
             }
             Log.d("MapActivity", "------------------------")
         }
-        Log.d("MapActivity", "=== END MAP CONTENTS ===")
+        Log.d("MapActivity", "=== END SCAN DATA ===")
     }
 }

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="120dp"
+    android:height="120dp"
+    android:viewportWidth="120"
+    android:viewportHeight="120">
+
+    <!-- Outer pulse ring -->
+    <path
+        android:pathData="M60,10 A50,50 0 1,1 59.99,10 Z"
+        android:fillColor="#20007AFF" />
+
+    <!-- Middle pulse ring -->
+    <path
+        android:pathData="M60,25 A35,35 0 1,1 59.99,25 Z"
+        android:fillColor="#40007AFF" />
+
+    <!-- Inner location dot -->
+    <path
+        android:pathData="M60,40 A20,20 0 1,1 59.99,40 Z"
+        android:fillColor="#007AFF" />
+
+    <!-- Center white dot -->
+    <path
+        android:pathData="M60,52 A8,8 0 1,1 59.99,52 Z"
+        android:fillColor="#FFFFFF" />
+
+</vector>

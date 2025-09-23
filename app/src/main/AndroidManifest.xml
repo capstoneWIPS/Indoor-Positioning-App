@@ -4,9 +4,11 @@
     <!-- WiFi related permissions -->
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    <uses-permission android:name="android.permission.INTERNET" /> <!-- Location permissions (required for WiFi scanning) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Location permissions (required for WiFi scanning) -->
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" /> <!-- For Android 13+ (API 33+) -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <!-- For Android 13+ (API 33+) -->
     <uses-permission
         android:name="android.permission.NEARBY_WIFI_DEVICES"
         android:usesPermissionFlags="neverForLocation" />
@@ -31,17 +33,25 @@
         android:theme="@style/Theme.FinalDemo"
         tools:targetApi="31">
 
+        <!-- Landing Activity - Now the main launcher -->
         <activity
-            android:name=".MapActivity"
+            android:name=".LandingActivity"
             android:exported="true"
-            android:label="@string/app_name"
+            android:screenOrientation="portrait"
             android:theme="@style/Theme.FinalDemo">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Map Activity - Remove launcher intent-filter -->
+        <activity
+            android:name=".MapActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.FinalDemo" />
+
     </application>
 
 </manifest>
