@@ -216,7 +216,9 @@ class MapActivity : AppCompatActivity() {
 
     private val PERMISSION_REQUEST_CODE = 100
 
-    private val floorPlans: MutableMap<String, Int> = mutableMapOf(
+    private var temp1 = 0
+
+    private var floorPlans: MutableMap<String, Int> = mutableMapOf(
         "Ground Floor" to R.drawable.ground_floor,
         "Floor One" to R.drawable.first_floor,
         "Floor Two" to R.drawable.second_floor,
@@ -225,6 +227,28 @@ class MapActivity : AppCompatActivity() {
         "Floor Five" to R.drawable.fifth_floor_new,
         "Floor Six" to R.drawable.sixth_floor_new
     )
+
+    private val floorPlanPlain: MutableMap<String, Int> = mutableMapOf(
+        "Ground Floor" to R.drawable.ground_floor,
+        "Floor One" to R.drawable.first_floor,
+        "Floor Two" to R.drawable.second_floor,
+        "Floor Three" to R.drawable.third_floor,
+        "Floor Four" to R.drawable.fourth_floor,
+        "Floor Five" to R.drawable.fifth_floor_new,
+        "Floor Six" to R.drawable.sixth_floor_new
+    )
+
+    private val floorPlanMarked: MutableMap<String, Int> = mutableMapOf(
+        "Ground Floor" to R.drawable.marked_floor_g,
+        "Floor One" to R.drawable.marked_floor_one,
+        "Floor Two" to R.drawable.marked_floor_two,
+        "Floor Three" to R.drawable.marked_floor_three,
+        "Floor Four" to R.drawable.marked_floor_four,
+        "Floor Five" to R.drawable.marked_floor_five,
+        "Floor Six" to R.drawable.marked_floor_six
+    )
+
+
 
     private val encodeFloor: MutableMap<String, Int> = mutableMapOf(
         "Floor Five" to 0,
@@ -413,7 +437,17 @@ class MapActivity : AppCompatActivity() {
         }
 
         saveButton.setOnClickListener {
-            getCurrentPosition()
+            temp1=floorPlans[currentFloor]!!
+            if (temp1==floorPlanMarked[currentFloor]){
+                floorPlans[currentFloor] = floorPlanPlain[currentFloor]!!
+
+            }
+            else{
+                floorPlans[currentFloor] = floorPlanMarked[currentFloor]!!
+            }
+            loadFloorPlan(currentFloor)
+
+            //getCurrentPosition()
         }
     }
 
@@ -762,7 +796,10 @@ class MapActivity : AppCompatActivity() {
 
     private fun setupFloatingActionButton() {
         fabSensors.setOnClickListener {
-            finish()
+            //finish()
+            mapImageView.resetScaleAndCenter()
+
+
         }
     }
 
