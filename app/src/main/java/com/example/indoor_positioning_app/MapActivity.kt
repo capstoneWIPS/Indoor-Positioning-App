@@ -49,6 +49,7 @@ import java.nio.FloatBuffer
 import kotlin.math.*
 import com.google.android.material.appbar.MaterialToolbar
 import androidx.appcompat.app.ActionBarDrawerToggle
+import java.io.Serializable
 
 // Custom overlay view for position marker
 class PositionOverlayView(context: Context) : View(context) {
@@ -270,6 +271,16 @@ class MapActivity : AppCompatActivity() {
         6 to "Ground Floor"
     )
 
+    private val decodeFloor2: MutableMap<Int,String> = mutableMapOf(
+        0 to "Ground Floor",
+        1 to "Floor One",
+        2 to "Floor Two",
+        3 to "Floor Three",
+        4 to "Floor Four",
+        5 to "Floor Five",
+        6 to "Floor Six",
+    )
+
     private val decodeFloorPlan: MutableMap<Int, Int> = mutableMapOf(
         0 to R.drawable.fifth_floor_new,
         1 to R.drawable.fourth_floor,
@@ -301,16 +312,19 @@ class MapActivity : AppCompatActivity() {
         for (i in 6 until columnLength) {
             modelInput[index++] = -120.0f
         }
+
         Log.d("MapActivity", "Model input initialized: ${modelInput.contentToString()}")
     }
 
     // Create an OrtSession with the given OrtEnvironment
-    private fun createONNXSession(ortEnvironment: OrtEnvironment): OrtSession {
-        val modelBytes = resources.openRawResource(R.raw.rssiknn).readBytes()
+    private fun createONNXSession(ortEnvironment: OrtEnvironment,resourceIdarg: Int): OrtSession {
+        //val modelBytes = resources.openRawResource(R.raw.rssiknn).readBytes()
+        val modelBytes = resources.openRawResource(resourceIdarg).readBytes()
+
         return ortEnvironment.createSession(modelBytes)
     }
 
-    private fun runPositionPrediction(ortSession: OrtSession, ortEnvironment: OrtEnvironment): Array<FloatArray> {
+    private fun runPositionPredictionCoords(ortSession: OrtSession, ortEnvironment: OrtEnvironment): Array<FloatArray> {
         // Get the name of the input node
         val inputName = ortSession.inputNames?.iterator()?.next()
         // Make a FloatBuffer of the inputs
@@ -324,9 +338,37 @@ class MapActivity : AppCompatActivity() {
         // Run the model
         val results = ortSession.run(mapOf(inputName to inputTensor))
         // Fetch and return the results
-        val output = results[0].value as Array<FloatArray>
-        Log.d("MapActivity", "Model prediction output: ${output[0].contentToString()}")
-        return output
+        Log.d("Activity","output coords is $results and ${results[0]} and ${results[0].value}")
+
+         val output1 = results[0].value as Array<FloatArray>
+        return output1
+
+
+
+    }
+
+    private fun runPositionPredictionFloor(ortSession: OrtSession, ortEnvironment: OrtEnvironment): LongArray {
+        // Get the name of the input node
+        val inputName = ortSession.inputNames?.iterator()?.next()
+        // Make a FloatBuffer of the inputs
+        val floatBufferInputs = FloatBuffer.wrap(modelInput)
+        // Create input tensor with floatBufferInputs of shape (1, columnLength)
+        val inputTensor = OnnxTensor.createTensor(
+            ortEnvironment,
+            floatBufferInputs,
+            longArrayOf(1, columnLength.toLong())
+        )
+        // Run the model
+        val results = ortSession.run(mapOf(inputName to inputTensor))
+        // Fetch and return the results
+        Log.d("Activity","output floor is $results and ${results[0]} and ${results[0].value}")
+
+
+        val output1 = results[0].value as LongArray
+            return output1
+
+
+
     }
 
     private fun initializeBitmaps() {
@@ -456,7 +498,8 @@ class MapActivity : AppCompatActivity() {
 
         // Then continue with your existing ONNX prediction code...
         val ortEnvironment = OrtEnvironment.getEnvironment()
-        val ortSession = createONNXSession(ortEnvironment)
+        val ortSessionCoords = createONNXSession(ortEnvironment,R.raw.rssiknncoords)
+        val ortSessionFloor = createONNXSession(ortEnvironment,R.raw.rssiknnfloor)
 
         for (result in latestScanResults) {
             if (result.SSID.isNotEmpty()) {
@@ -476,18 +519,20 @@ class MapActivity : AppCompatActivity() {
             }
         }
 
-        val output = runPositionPrediction(ortSession, ortEnvironment)[0]
+        val output = runPositionPredictionCoords(ortSessionCoords, ortEnvironment)[0]
         val x = output[0]
         val y = output[1]
-        val floorNumber = output[2]
+        val output2 = runPositionPredictionFloor(ortSessionFloor, ortEnvironment)[0]
+
+        val floorNumber = output2
 
         Log.d("MapActivity", "Position prediction: x=$x, y=$y, floor=$floorNumber")
 
         // Use predicted coordinates
         normalizedX = x.toDouble()
         normalizedY = y.toDouble()
-        floorPrediction = round(floorNumber).toInt()
-        val newFloor = decodeFloor[floorPrediction]!!
+        floorPrediction = floorNumber.toInt()
+        val newFloor = decodeFloor2[floorPrediction]!!
 
         // Check if floor changed
         if (newFloor != currentFloor) {
@@ -509,6 +554,9 @@ class MapActivity : AppCompatActivity() {
         Log.d("MapActivity", "Position updated: floor=$currentFloor, coordinates=($normalizedX, $normalizedY)")
         initializeModelParameters()
     }
+
+
+
     private fun initializeViews() {
         // Initialize drawer components
         drawerLayout = findViewById(R.id.drawerLayout)
