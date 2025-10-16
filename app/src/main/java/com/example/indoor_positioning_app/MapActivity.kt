@@ -177,6 +177,85 @@ class PositionFilter {
         floorHistory.clear()
     }
 }
+// TEMPORARY. REMOVE IF FLUCTUATIONS ARE WORSE.
+class RLPositionRefiner(private val context: Context) {
+    private lateinit var ortEnvironment: OrtEnvironment
+    private lateinit var rlSession: OrtSession
+
+    private val positionHistory = mutableListOf<Pair<Double, Double>>()
+    private val maxHistory = 5
+
+    init {
+        try {
+            ortEnvironment = OrtEnvironment.getEnvironment()
+            val modelBytes = context.resources.openRawResource(R.raw.rl_position_refiner).readBytes()
+            rlSession = ortEnvironment.createSession(modelBytes)
+            Log.d("RLRefiner", "RL position refiner model loaded successfully")
+        } catch (e: Exception) {
+            Log.e("RLRefiner", "Error loading RL model: ${e.message}", e)
+        }
+    }
+
+    fun refinePosition(
+        rssiVector: FloatArray,
+        knnPrediction: Pair<Double, Double>,
+        lastPosition: Pair<Double, Double>
+    ): Pair<Double, Double> {
+
+        val velocity = Pair(
+            knnPrediction.first - lastPosition.first,
+            knnPrediction.second - lastPosition.second
+        )
+
+        val rssiStats = floatArrayOf(
+            rssiVector.average().toFloat(),
+            rssiVector.standardDeviation(),
+            rssiVector.maxOrNull() ?: -120f,
+            rssiVector.minOrNull() ?: -120f
+        )
+
+        val state = FloatArray(rssiVector.size + 10)
+        rssiVector.copyInto(state, 0)
+        state[rssiVector.size] = knnPrediction.first.toFloat()
+        state[rssiVector.size + 1] = knnPrediction.second.toFloat()
+        state[rssiVector.size + 2] = lastPosition.first.toFloat()
+        state[rssiVector.size + 3] = lastPosition.second.toFloat()
+        state[rssiVector.size + 4] = velocity.first.toFloat()
+        state[rssiVector.size + 5] = velocity.second.toFloat()
+        rssiStats.copyInto(state, rssiVector.size + 6)
+
+        val inputName = rlSession.inputNames?.iterator()?.next()
+        val floatBuffer = FloatBuffer.wrap(state)
+        val inputTensor = OnnxTensor.createTensor(
+            ortEnvironment,
+            floatBuffer,
+            longArrayOf(1, state.size.toLong())
+        )
+
+        val results = rlSession.run(mapOf(inputName to inputTensor))
+        val correction = (results[0].value as Array<FloatArray>)[0]
+
+        val dx = correction[0].toDouble()
+        val dy = correction[1].toDouble()
+        val confidence = correction[2].toDouble().coerceIn(0.0, 1.0)
+
+        val refinedX = (knnPrediction.first + dx * confidence).coerceIn(0.0, 1.0)
+        val refinedY = (knnPrediction.second + dy * confidence).coerceIn(0.0, 1.0)
+
+        Log.d("RLRefiner", "KNN: (${"%.4f".format(knnPrediction.first)}, ${"%.4f".format(knnPrediction.second)}) → " +
+                "Refined: (${"%.4f".format(refinedX)}, ${"%.4f".format(refinedY)}) | " +
+                "Correction: (${"%.4f".format(dx)}, ${"%.4f".format(dy)}, conf=${"%.2f".format(confidence)})")
+
+        return Pair(refinedX, refinedY)
+    }
+}
+
+// Helper extension
+fun FloatArray.standardDeviation(): Float {
+    val mean = this.average()
+    val variance = this.map { (it - mean).pow(2) }.average()
+    return sqrt(variance).toFloat()
+}
 
 class FloorStabilizer {
     private var currentFloor: Int = 0
@@ -557,7 +636,7 @@ class MapActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_map)
-
+        rlRefiner = RLPositionRefiner(this)
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.mapMain)) { v, insets ->
             val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
@@ -610,11 +689,12 @@ class MapActivity : AppCompatActivity() {
     private val positionFilter = PositionFilter()
     private val floorStabilizer = FloorStabilizer()
     private val positionConstraint = PositionConstraint()
-
+    private lateinit var rlRefiner: RLPositionRefiner
     fun getCurrentPosition() {
         val ortEnvironment = OrtEnvironment.getEnvironment()
         val ortSessionCoords = createONNXSession(ortEnvironment, R.raw.rssiknncoords)
         val ortSessionFloor = createONNXSession(ortEnvironment, R.raw.rssiknnfloor)
+
 
         for (result in latestScanResults) {
             if (result.SSID.isNotEmpty()) {
@@ -635,17 +715,22 @@ class MapActivity : AppCompatActivity() {
         }
 
         val output = runPositionPredictionCoords(ortSessionCoords, ortEnvironment)[0]
-        val rawX = output[0].toDouble()
-        val rawY = output[1].toDouble()
+        val knnX = output[0].toDouble()
+        val knnY = output[1].toDouble()
+        val (refinedX, refinedY) = rlRefiner.refinePosition(
+            modelInput,
+            Pair(knnX, knnY),
+            Pair(normalizedX, normalizedY)
+        )
 
         val output2 = runPositionPredictionFloor(ortSessionFloor, ortEnvironment)[0]
         val rawFloor = output2.toInt()
 
-        val (filteredX, filteredY) = positionFilter.filterPosition(rawX, rawY)
+        val (filteredX, filteredY) = positionFilter.filterPosition(refinedX, refinedY)
         val (constrainedX, constrainedY) = positionConstraint.constrainPosition(filteredX, filteredY)
         val stabilizedFloor = floorStabilizer.updateFloor(rawFloor)
 
-        Log.d("MapActivity", "Raw: ($rawX, $rawY, floor=$rawFloor)")
+        Log.d("MapActivity", "Raw: ($knnX, $knnY, floor=$rawFloor)")
         Log.d("MapActivity", "Filtered: ($filteredX, $filteredY, floor=$stabilizedFloor)")
 
         normalizedX = constrainedX
