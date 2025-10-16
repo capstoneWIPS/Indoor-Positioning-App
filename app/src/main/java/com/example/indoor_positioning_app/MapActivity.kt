@@ -49,6 +49,7 @@ import java.nio.FloatBuffer
 import kotlin.math.*
 import com.google.android.material.appbar.MaterialToolbar
 import androidx.appcompat.app.ActionBarDrawerToggle
+import java.io.IOException
 import java.io.Serializable
 
 // Custom overlay view for position marker
@@ -139,6 +140,98 @@ class PositionOverlayView(context: Context) : View(context) {
             }
         } else {
             Log.d("PositionOverlay", "Conditions not met for drawing marker")
+        }
+    }
+}
+class PositionFilter {
+    private val positionHistory = mutableListOf<Pair<Double, Double>>()
+    private val floorHistory = mutableListOf<Int>()
+    private val maxHistorySize = 5
+
+    fun filterPosition(x: Double, y: Double): Pair<Double, Double> {
+        positionHistory.add(Pair(x, y))
+        if (positionHistory.size > maxHistorySize) {
+            positionHistory.removeAt(0)
+        }
+
+        val weights = List(positionHistory.size) { i -> (i + 1).toDouble() }
+        val totalWeight = weights.sum()
+
+        val avgX = positionHistory.mapIndexed { i, pos -> pos.first * weights[i] }.sum() / totalWeight
+        val avgY = positionHistory.mapIndexed { i, pos -> pos.second * weights[i] }.sum() / totalWeight
+
+        return Pair(avgX, avgY)
+    }
+
+    fun filterFloor(floor: Int): Int {
+        floorHistory.add(floor)
+        if (floorHistory.size > maxHistorySize) {
+            floorHistory.removeAt(0)
+        }
+
+        return floorHistory.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: floor
+    }
+
+    fun reset() {
+        positionHistory.clear()
+        floorHistory.clear()
+    }
+}
+
+class FloorStabilizer {
+    private var currentFloor: Int = 0
+    private var pendingFloor: Int? = null
+    private var pendingFloorCount: Int = 0
+    private val requiredConsecutive = 3
+
+    fun updateFloor(predictedFloor: Int): Int {
+        if (predictedFloor == currentFloor) {
+            pendingFloor = null
+            pendingFloorCount = 0
+            return currentFloor
+        }
+
+        if (predictedFloor == pendingFloor) {
+            pendingFloorCount++
+            if (pendingFloorCount >= requiredConsecutive) {
+                currentFloor = predictedFloor
+                pendingFloor = null
+                pendingFloorCount = 0
+            }
+        } else {
+            pendingFloor = predictedFloor
+            pendingFloorCount = 1
+        }
+
+        return currentFloor
+    }
+}
+
+class PositionConstraint {
+     var lastX: Double = 0.0
+     var lastY: Double = 0.0
+    private val maxJumpDistance = 0.05
+
+    fun constrainPosition(newX: Double, newY: Double): Pair<Double, Double> {
+        if (lastX == 0.0 && lastY == 0.0) {
+            lastX = newX
+            lastY = newY
+            return Pair(newX, newY)
+        }
+
+        val distance = sqrt((newX - lastX).pow(2) + (newY - lastY).pow(2))
+
+        return if (distance > maxJumpDistance) {
+            val angle = atan2(newY - lastY, newX - lastX)
+            val constrainedX = lastX + maxJumpDistance * cos(angle)
+            val constrainedY = lastY + maxJumpDistance * sin(angle)
+            lastX = constrainedX
+            lastY = constrainedY
+            Pair(constrainedX, constrainedY)
+        } else {
+            lastX = newX
+            lastY = newY
+            Pair(newX, newY)
         }
     }
 }
@@ -438,6 +531,28 @@ class MapActivity : AppCompatActivity() {
         stopContinuousScanning()
         stopPulseAnimation()
     }
+    fun logToCSV(normalizedX: Double, normalizedY: Double, floorNumber: Long) {
+        try {
+            val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            val file = File(downloadsDir, "points.csv")
+
+            //val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS,filePath)
+
+            // If file doesn't exist, create it and add header
+            if (!file.exists()) {
+                file.createNewFile()
+                file.appendText("normalizedX,normalizedY,floorNumber\n")
+            }
+
+            // Append new data row
+            val csvLine = "$normalizedX,$normalizedY,$floorNumber\n"
+            file.appendText(csvLine)
+
+            println("Logged: $csvLine")
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -492,14 +607,14 @@ class MapActivity : AppCompatActivity() {
             //getCurrentPosition()
         }
     }
+    private val positionFilter = PositionFilter()
+    private val floorStabilizer = FloorStabilizer()
+    private val positionConstraint = PositionConstraint()
 
     fun getCurrentPosition() {
-
-
-        // Then continue with your existing ONNX prediction code...
         val ortEnvironment = OrtEnvironment.getEnvironment()
-        val ortSessionCoords = createONNXSession(ortEnvironment,R.raw.rssiknncoords)
-        val ortSessionFloor = createONNXSession(ortEnvironment,R.raw.rssiknnfloor)
+        val ortSessionCoords = createONNXSession(ortEnvironment, R.raw.rssiknncoords)
+        val ortSessionFloor = createONNXSession(ortEnvironment, R.raw.rssiknnfloor)
 
         for (result in latestScanResults) {
             if (result.SSID.isNotEmpty()) {
@@ -520,18 +635,22 @@ class MapActivity : AppCompatActivity() {
         }
 
         val output = runPositionPredictionCoords(ortSessionCoords, ortEnvironment)[0]
-        val x = output[0]
-        val y = output[1]
+        val rawX = output[0].toDouble()
+        val rawY = output[1].toDouble()
+
         val output2 = runPositionPredictionFloor(ortSessionFloor, ortEnvironment)[0]
+        val rawFloor = output2.toInt()
 
-        val floorNumber = output2
+        val (filteredX, filteredY) = positionFilter.filterPosition(rawX, rawY)
+        val (constrainedX, constrainedY) = positionConstraint.constrainPosition(filteredX, filteredY)
+        val stabilizedFloor = floorStabilizer.updateFloor(rawFloor)
 
-        Log.d("MapActivity", "Position prediction: x=$x, y=$y, floor=$floorNumber")
+        Log.d("MapActivity", "Raw: ($rawX, $rawY, floor=$rawFloor)")
+        Log.d("MapActivity", "Filtered: ($filteredX, $filteredY, floor=$stabilizedFloor)")
 
-        // Use predicted coordinates
-        normalizedX = x.toDouble()
-        normalizedY = y.toDouble()
-        floorPrediction = floorNumber.toInt()
+        normalizedX = constrainedX
+        normalizedY = constrainedY
+        floorPrediction = stabilizedFloor
         val newFloor = decodeFloor2[floorPrediction]!!
 
         // Check if floor changed
@@ -539,22 +658,22 @@ class MapActivity : AppCompatActivity() {
             currentFloor = newFloor
             isFloorChanged = true
 
-            // Update floor selection chips
             for (i in 0 until floorChipGroup.childCount) {
                 val chip = floorChipGroup.getChildAt(i) as Chip
                 chip.isChecked = (chip.text.toString() == currentFloor)
             }
 
             loadFloorPlan(currentFloor)
+            positionConstraint.lastX = 0.0
+            positionConstraint.lastY = 0.0
         }
+        logToCSV(normalizedX,normalizedY, floorPrediction.toLong())
 
-        // Update position marker
         addPositionMarkerAndSave()
 
         Log.d("MapActivity", "Position updated: floor=$currentFloor, coordinates=($normalizedX, $normalizedY)")
         initializeModelParameters()
     }
-
 
 
     private fun initializeViews() {
