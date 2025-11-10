@@ -145,8 +145,7 @@ class PositionOverlayView(context: Context) : View(context) {
 }
 class PositionFilter {
     private val positionHistory = mutableListOf<Pair<Double, Double>>()
-    private val floorHistory = mutableListOf<Int>()
-    private val maxHistorySize = 5
+    private val maxHistorySize = 10
 
     fun filterPosition(x: Double, y: Double): Pair<Double, Double> {
         positionHistory.add(Pair(x, y))
@@ -154,27 +153,28 @@ class PositionFilter {
             positionHistory.removeAt(0)
         }
 
-        val weights = List(positionHistory.size) { i -> (i + 1).toDouble() }
+        val weights = List(positionHistory.size) { i ->
+            Math.pow(2.0, i.toDouble())
+        }
         val totalWeight = weights.sum()
 
-        val avgX = positionHistory.mapIndexed { i, pos -> pos.first * weights[i] }.sum() / totalWeight
-        val avgY = positionHistory.mapIndexed { i, pos -> pos.second * weights[i] }.sum() / totalWeight
+        val avgX = positionHistory.mapIndexed { i, pos ->
+            pos.first * weights[i]
+        }.sum() / totalWeight
+
+        val avgY = positionHistory.mapIndexed { i, pos ->
+            pos.second * weights[i]
+        }.sum() / totalWeight
 
         return Pair(avgX, avgY)
     }
 
     fun filterFloor(floor: Int): Int {
-        floorHistory.add(floor)
-        if (floorHistory.size > maxHistorySize) {
-            floorHistory.removeAt(0)
-        }
-
-        return floorHistory.groupingBy { it }.eachCount().maxByOrNull { it.value }?.key ?: floor
+        return floor
     }
 
     fun reset() {
         positionHistory.clear()
-        floorHistory.clear()
     }
 }
 
@@ -182,7 +182,7 @@ class FloorStabilizer {
     private var currentFloor: Int = 0
     private var pendingFloor: Int? = null
     private var pendingFloorCount: Int = 0
-    private val requiredConsecutive = 3
+    private val requiredConsecutive = 5
 
     fun updateFloor(predictedFloor: Int): Int {
         if (predictedFloor == currentFloor) {
@@ -205,12 +205,19 @@ class FloorStabilizer {
 
         return currentFloor
     }
+
+    fun reset() {
+        currentFloor = 0
+        pendingFloor = null
+        pendingFloorCount = 0
+    }
 }
 
 class PositionConstraint {
-     var lastX: Double = 0.0
-     var lastY: Double = 0.0
-    private val maxJumpDistance = 0.05
+    var lastX: Double = 0.0
+    var lastY: Double = 0.0
+    private val maxJumpDistance = 0.03
+    private val smoothingFactor = 0.7
 
     fun constrainPosition(newX: Double, newY: Double): Pair<Double, Double> {
         if (lastX == 0.0 && lastY == 0.0) {
@@ -225,14 +232,64 @@ class PositionConstraint {
             val angle = atan2(newY - lastY, newX - lastX)
             val constrainedX = lastX + maxJumpDistance * cos(angle)
             val constrainedY = lastY + maxJumpDistance * sin(angle)
+
             lastX = constrainedX
             lastY = constrainedY
             Pair(constrainedX, constrainedY)
         } else {
-            lastX = newX
-            lastY = newY
-            Pair(newX, newY)
+            val smoothedX = lastX * (1 - smoothingFactor) + newX * smoothingFactor
+            val smoothedY = lastY * (1 - smoothingFactor) + newY * smoothingFactor
+
+            lastX = smoothedX
+            lastY = smoothedY
+            Pair(smoothedX, smoothedY)
         }
+    }
+
+    fun reset() {
+        lastX = 0.0
+        lastY = 0.0
+    }
+}
+
+class KalmanPositionFilter {
+    private var estimateX = 0.0
+    private var estimateY = 0.0
+    private var errorCovarianceX = 1.0
+    private var errorCovarianceY = 1.0
+
+    private val processNoise = 0.001
+    private val measurementNoise = 0.1
+
+    fun filter(measuredX: Double, measuredY: Double): Pair<Double, Double> {
+        if (estimateX == 0.0 && estimateY == 0.0) {
+            estimateX = measuredX
+            estimateY = measuredY
+            return Pair(measuredX, measuredY)
+        }
+
+        val predictedX = estimateX
+        val predictedY = estimateY
+        val predictedErrorX = errorCovarianceX + processNoise
+        val predictedErrorY = errorCovarianceY + processNoise
+
+        val kalmanGainX = predictedErrorX / (predictedErrorX + measurementNoise)
+        val kalmanGainY = predictedErrorY / (predictedErrorY + measurementNoise)
+
+        estimateX = predictedX + kalmanGainX * (measuredX - predictedX)
+        estimateY = predictedY + kalmanGainY * (measuredY - predictedY)
+
+        errorCovarianceX = (1 - kalmanGainX) * predictedErrorX
+        errorCovarianceY = (1 - kalmanGainY) * predictedErrorY
+
+        return Pair(estimateX, estimateY)
+    }
+
+    fun reset() {
+        estimateX = 0.0
+        estimateY = 0.0
+        errorCovarianceX = 1.0
+        errorCovarianceY = 1.0
     }
 }
 class MapActivity : AppCompatActivity() {
@@ -255,7 +312,7 @@ class MapActivity : AppCompatActivity() {
     private var scanIndex = 0
     private var isScanning = false
     private val handler = Handler(Looper.getMainLooper())
-    private val scanInterval = 500L
+    private val scanInterval = 1000L
     private var latestScanResults: List<android.net.wifi.ScanResult> = emptyList()
 
     // Data structure to store all scan data
@@ -611,26 +668,17 @@ class MapActivity : AppCompatActivity() {
     private val floorStabilizer = FloorStabilizer()
     private val positionConstraint = PositionConstraint()
 
+    private val kalmanFilter = KalmanPositionFilter()
+
     fun getCurrentPosition() {
         val ortEnvironment = OrtEnvironment.getEnvironment()
         val ortSessionCoords = createONNXSession(ortEnvironment, R.raw.rssiknncoords)
         val ortSessionFloor = createONNXSession(ortEnvironment, R.raw.rssiknnfloor)
 
         for (result in latestScanResults) {
-            if (result.SSID.isNotEmpty()) {
-                val ssid = result.SSID
-                if (ssid in listOf("PESU-CIE", "PESU-Commandcenter", "PESU-EC-Campus",
-                        "PESU-PIXELB", "PESU-Research1", "PESU-Research2")) {
-                    val columnIndex = columnsJson.get(ssid)
-                    modelInput[columnIndex as Int] = 1f
-
-                    if (result.BSSID.isNotEmpty()) {
-                        if (columnsJson.has(result.BSSID)) {
-                            val bssidColumnIndex = columnsJson.get(result.BSSID)
-                            modelInput[bssidColumnIndex as Int] = result.level.toFloat()
-                        }
-                    }
-                }
+            if (result.BSSID.isNotEmpty() && columnsJson.has(result.BSSID)) {
+                val bssidColumnIndex = columnsJson.getInt(result.BSSID)
+                modelInput[bssidColumnIndex] = result.level.toFloat()
             }
         }
 
@@ -642,7 +690,8 @@ class MapActivity : AppCompatActivity() {
         val rawFloor = output2.toInt()
 
         val (filteredX, filteredY) = positionFilter.filterPosition(rawX, rawY)
-        val (constrainedX, constrainedY) = positionConstraint.constrainPosition(filteredX, filteredY)
+        val (kalmanX, kalmanY) = kalmanFilter.filter(filteredX, filteredY)
+        val (constrainedX, constrainedY) = positionConstraint.constrainPosition(kalmanX, kalmanY)
         val stabilizedFloor = floorStabilizer.updateFloor(rawFloor)
 
         Log.d("MapActivity", "Raw: ($rawX, $rawY, floor=$rawFloor)")
@@ -664,11 +713,13 @@ class MapActivity : AppCompatActivity() {
             }
 
             loadFloorPlan(currentFloor)
-            positionConstraint.lastX = 0.0
-            positionConstraint.lastY = 0.0
-        }
-        logToCSV(normalizedX,normalizedY, floorPrediction.toLong())
+            positionConstraint.reset()
+            kalmanFilter.reset()
+            positionFilter.reset()
 
+        }
+
+        logToCSV(normalizedX, normalizedY, floorPrediction.toLong())
         addPositionMarkerAndSave()
 
         Log.d("MapActivity", "Position updated: floor=$currentFloor, coordinates=($normalizedX, $normalizedY)")
