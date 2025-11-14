@@ -12,7 +12,7 @@
 [![Watch the video](https://img.youtube.com/vi/aEaKH_TQzss/0.jpg)](https://youtu.be/aEaKH_TQzss)
 
 ## Demo Video (Improved accuracy with fine-grained fingerprinting and filters)
-[Demo Video on YouTube](https://youtu.be/DbrGqTCS1y0)
+[![Video Thumbnail](https://img.youtube.com/vi/DbrGqTCS1y0/hqdefault.jpg)](https://youtu.be/DbrGqTCS1y0)
 
 
 
