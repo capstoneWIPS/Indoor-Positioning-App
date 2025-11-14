@@ -7,5 +7,18 @@
 - Lightweight implementation optimized for mobile devices with low-latency predictions
 - Flexible ONNX integration, allowing users to create and deploy their own custom models for positioning
 - This release delivers accurate, cost-effective, and infrastructure-free indoor navigation using Wi-Fi signals.
-## Demo video
+  
+## Old Demo video (without filters)
 [![Watch the video](https://img.youtube.com/vi/aEaKH_TQzss/0.jpg)](https://youtu.be/aEaKH_TQzss)
+
+## Demo Video (Improved accuracy with fine-grained fingerprinting and filters)
+[Demo Video on YouTube](https://youtu.be/DbrGqTCS1y0)
+
+
+
+
+
+
+
+
+
